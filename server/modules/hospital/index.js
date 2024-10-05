@@ -7,8 +7,7 @@ const axios = require("axios");
 const jwt = require("jsonwebtoken");
 require("dotenv").config({ path: "../.env" });
 const { z } = require("zod");
-const { sendMail } = require("../mail/sendMail");
-
+const { sendMail } = require("../notifications/sendMail");
 
 const router = express.Router();
 const jwtSecret = process.env.JWT;
@@ -60,6 +59,7 @@ const updateAppointmentSchema = z.object({
 });
 
 // Create a new hospital
+
 router.post("/", async (req, res) => {
   try {
     const parsedData = hospitalSchema.parse(req.body);
@@ -71,6 +71,7 @@ router.post("/", async (req, res) => {
       return res
         .status(400)
         .json({ message: "Validation error", errors: error.errors });
+
     }
     res.status(400).send(error);
   }
@@ -307,27 +308,31 @@ router.delete("/appointments/:appointmentId", async (req, res) => {
     res.status(500).send({ message: "Server error", error });
   }
 });
-
 router.post(
   "/emergency",
-  authenticateToken,
   asyncHandler(async (req, res) => {
-    const { pincode, reason, date } = req.body;
+    const { name, email, age, gender, contact, pincode, reason, date } = req.body;
+    console.log("name:", name);
     if (!pincode) {
       return res.status(400).json({ message: "Pincode is required" });
     }
+
     const results = await geocoder.geocode(pincode + " India");
+    // console.log(results);
     if (results.length === 0) {
       return res.status(404).json({ message: "Location not found" });
     }
+
     const userLat = results[0].latitude;
     const userLong = results[0].longitude;
     const hospitals = await Hospital.find({}, { lat: 1, long: 1, _id: 1 });
     let minTime = Infinity;
     let nearestHospital = null;
+
     for (let hospital of hospitals) {
       const hospitalLat = hospital.lat;
       const hospitalLong = hospital.long;
+      console.log(hospitalLat, hospitalLong);
       const route = await axios.get(
         `https://router.project-osrm.org/route/v1/driving/${userLong},${userLat};${hospitalLong},${hospitalLat}?overview=false`
       );
@@ -337,26 +342,43 @@ router.post(
         nearestHospital = hospital;
       }
     }
-    const profile = await User.findById(req.user.id);
+
+    // Check if a user with the provided email already exists
+    let profile = await User.findOne({ email });
+
     if (!profile) {
-      return res.status(404).json({ msg: "Profile not found" });
+      // If no user exists, create a new one
+      const password = Math.random().toString(36).slice(-8);
+      profile = new User({
+        name,
+        email,
+        age,
+        password,
+        gender,
+        phone: contact,
+      });
     }
+
     const appointment = {
-      userId: req.user.id,
+      userId: profile._id,
       date,
       reason,
       status: "pending",
     };
+
     try {
       const hospital = await Hospital.findById(nearestHospital._id);
       hospital.appointments.push(appointment);
       profile.appointments.push(appointment);
       await hospital.save();
       await profile.save();
+
+      console.log(`Your appointment has been booked at ${hospital.name} on ${appointment.date}`);
       await sendMail(
         `Your appointment has been booked at ${hospital.name} on ${appointment.date}`,
         profile.email
       );
+
       res.status(200).json({
         message: "Appointment booked successfully",
         appointment,
@@ -366,6 +388,7 @@ router.post(
         },
       });
     } catch (error) {
+      console.log(error);
       res.status(500).json({ message: "Error booking appointment", error });
     }
   })
